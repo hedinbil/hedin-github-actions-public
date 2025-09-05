@@ -27,22 +27,35 @@ inputs:
   git-user-name:
     description: 'Git user name'
     required: true
+  # argocd-application-name:
+  #   description: 'ArgoCD application name'
+  #   required: true
+  # argocd-token:
+  #   description: 'ArgoCD token'
+  #   required: true
+  pat-token:
+    description: 'PAT token'
+    required: true
   github-actor:
     description: 'GitHub actor'
     required: true
   github-commit-url:
     description: 'GitHub commit url'
     required: true
+  # skip-sync:
+  #   description: 'Skip the sync step'
+  #   required: false
+  #   default: 'false'
 runs:
   using: "composite"
   steps:
-  # This step checks out the repository 'hedinbil/hedin-applications-state' into a directory named 'hedin-applications-state'.
-  # - name: Checkout
-  #   uses: actions/checkout@v4
-  #   with:
-  #     path: hedin-applications-state
-  #     repository: hedinbil/hedin-applications-state
-  #     token: ${{ inputs.pat-token }}
+  #This step checks out the repository 'hedinbil/hedin-applications-state' into a directory named 'hedin-applications-state'.
+  - name: Checkout
+    uses: actions/checkout@v4
+    with:
+      path: hedin-applications-state
+      repository: hedinbil/hedin-applications-state
+      token: ${{ inputs.pat-token }}
 
   # This step sets the global git user email and name to the inputs provided.
   - run: |
