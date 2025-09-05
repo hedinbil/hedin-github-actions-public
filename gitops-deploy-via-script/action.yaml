@@ -27,25 +27,12 @@ inputs:
   git-user-name:
     description: 'Git user name'
     required: true
-  # argocd-application-name:
-  #   description: 'ArgoCD application name'
-  #   required: true
-  # argocd-token:
-  #   description: 'ArgoCD token'
-  #   required: true
-  # pat-token:
-  #   description: 'PAT token'
-  #   required: true
   github-actor:
     description: 'GitHub actor'
     required: true
   github-commit-url:
     description: 'GitHub commit url'
     required: true
-  # skip-sync:
-  #   description: 'Skip the sync step'
-  #   required: false
-  #   default: 'false'
 runs:
   using: "composite"
   steps:
