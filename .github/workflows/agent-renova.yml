@@ -1,0 +1,46 @@
+name: Agent Renova - Repository Cleanup
+
+on:
+  workflow_call:
+    inputs:
+      cleanup-type:
+        description: 'Type of cleanup to perform: all, workflow-runs, artifacts, or branches'
+        type: string
+        required: false
+        default: 'all'
+      workflow-runs-cutoff-days:
+        description: 'Days before workflow runs are considered old'
+        type: string
+        required: false
+        default: '7'
+      artifacts-cutoff-days:
+        description: 'Days before artifacts are considered old'
+        type: string
+        required: false
+        default: '7'
+      branches-cutoff-days:
+        description: 'Days before branches are considered stale'
+        type: string
+        required: false
+        default: '30'
+
+permissions:
+  contents: write
+  actions: write
+  id-token: write
+  pull-requests: read
+  issues: read
+
+jobs:
+  cleanup:
+    name: Repository Cleanup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Renova Agent
+        uses: hedinbil/hedin-github-actions-public/agent-renova@main
+        with:
+          cleanup-type: ${{ inputs.cleanup-type }}
+          github-token: ${{ github.token }}
+          workflow-runs-cutoff-days: ${{ inputs.workflow-runs-cutoff-days }}
+          artifacts-cutoff-days: ${{ inputs.artifacts-cutoff-days }}
+          branches-cutoff-days: ${{ inputs.branches-cutoff-days }}
