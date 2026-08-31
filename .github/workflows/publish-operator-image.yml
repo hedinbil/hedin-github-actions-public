@@ -1,0 +1,192 @@
+# -----------------------------------------------------------------------------
+# Publish Operator Image (Reusable Workflow)
+#
+# PUBLIC copy for public caller repos (e.g. azure-apim-operator), which cannot
+# reference workflows in the internal hedin-github-actions repo. Keep this file
+# identical to hedin-github-actions/.github/workflows/publish-operator-image.yml.
+#
+# The single release contract for every operator image, matching
+# publish-operator-chart.yml:
+#
+#   - PRs and main pushes BUILD the image to prove it compiles, but publish
+#     nothing. There are no rolling tags (no latest, no <ver>-latest, no
+#     <ver>-<sha>), so a chart pin always names one exact build.
+#   - A release tag <tag-prefix>X.Y.Z pushes exactly one immutable tag,
+#     <acr>.azurecr.io/<image>:vX.Y.Z - the tag charts default to via
+#     v<appVersion>. Publishing a version that already exists hard-fails.
+#   - The tag must agree with Chart.yaml (version == appVersion == tag), so a
+#     mismatch is caught here instead of as ImagePullBackOff after a sync.
+#
+# Caller requirements:
+#   - permissions: id-token: write, contents: read
+#     (plus packages: write when publish-to-ghcr is enabled)
+#   - a GitHub environment "acr" whose federated credential covers the
+#     caller repo with subject ...:environment:acr
+#   - trigger on pull_request, push to main, and push of the release tag
+# -----------------------------------------------------------------------------
+
+name: Publish Operator Image
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        required: true
+        type: string
+        description: Image repository name in the registry.
+      chart-dir:
+        required: false
+        type: string
+        default: ''
+        description: >
+          Chart directory whose Chart.yaml must agree with the release tag.
+          Defaults to charts/<image-name>.
+      acr-name:
+        required: false
+        type: string
+        default: hedinit
+        description: Azure Container Registry name.
+      azure-client-id:
+        required: true
+        type: string
+        description: Client id of the identity with a federated credential for environment:acr.
+      azure-subscription-id:
+        required: true
+        type: string
+      azure-tenant-id:
+        required: true
+        type: string
+      tag-prefix:
+        required: false
+        type: string
+        default: 'v'
+        description: Release tags are <tag-prefix>X.Y.Z.
+      context:
+        required: false
+        type: string
+        default: '.'
+        description: Docker build context.
+      platforms:
+        required: false
+        type: string
+        default: linux/amd64
+      publish-to-ghcr:
+        required: false
+        type: boolean
+        default: false
+        description: Also push ghcr.io/<owner>/<image>:vX.Y.Z as a secondary target.
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: acr
+    env:
+      IMAGE_NAME: ${{ inputs.image-name }}
+      ACR_NAME: ${{ inputs.acr-name }}
+      ACR_REGISTRY: ${{ inputs.acr-name }}.azurecr.io
+      TAG_PREFIX: ${{ inputs.tag-prefix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # The tag is the release identity, so it has to agree with the chart it
+      # will be deployed by.
+      - name: Determine version
+        id: version
+        run: |
+          CHART_DIR="${{ inputs.chart-dir }}"
+          if [ -z "${CHART_DIR}" ]; then
+            CHART_DIR="charts/${IMAGE_NAME}"
+          fi
+
+          IS_RELEASE=false
+          VERSION=""
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && echo "${GITHUB_REF_NAME}" | grep -Eq "^$(echo "${TAG_PREFIX}" | sed 's/[.[\*^$()+?{|]/\\&/g')[0-9]+\.[0-9]+\.[0-9]+$"; then
+            IS_RELEASE=true
+            VERSION="${GITHUB_REF_NAME#"${TAG_PREFIX}"}"
+            CHART_VERSION="$(grep '^version:' "${CHART_DIR}/Chart.yaml" | awk '{print $2}' | tr -d '"')"
+            APP_VERSION="$(grep '^appVersion:' "${CHART_DIR}/Chart.yaml" | awk '{print $2}' | tr -d '"')"
+            if [ "${CHART_VERSION}" != "${APP_VERSION}" ]; then
+              echo "::error::Chart.yaml version ${CHART_VERSION} and appVersion ${APP_VERSION} must be equal"
+              exit 1
+            fi
+            if [ "${VERSION}" != "${APP_VERSION}" ]; then
+              echo "::error::tag ${GITHUB_REF_NAME} does not match chart appVersion ${APP_VERSION}; bump Chart.yaml before tagging"
+              exit 1
+            fi
+            echo "Release build: tag ${GITHUB_REF_NAME}, chart ${CHART_VERSION}, appVersion ${APP_VERSION} all agree"
+          fi
+          echo "is_release=${IS_RELEASE}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Login via Azure CLI
+        if: steps.version.outputs.is_release == 'true'
+        uses: Azure/login@v3
+        with:
+          client-id: ${{ inputs.azure-client-id }}
+          subscription-id: ${{ inputs.azure-subscription-id }}
+          tenant-id: ${{ inputs.azure-tenant-id }}
+
+      - name: Login to ACR
+        if: steps.version.outputs.is_release == 'true'
+        run: az acr login --name "${ACR_NAME}"
+
+      - name: Login to GHCR (secondary)
+        if: steps.version.outputs.is_release == 'true' && inputs.publish-to-ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Published tags are immutable: a rebuild of an existing version would
+      # silently change what a pinned chart deploys.
+      - name: Check tag is free
+        if: steps.version.outputs.is_release == 'true'
+        run: |
+          EXISTING=$(az acr repository show-tags --name "${ACR_NAME}" \
+            --repository "${IMAGE_NAME}" -o tsv 2>/dev/null || true)
+          if echo "${EXISTING}" | grep -qx "v${{ steps.version.outputs.version }}"; then
+            echo "::error::${IMAGE_NAME}:v${{ steps.version.outputs.version }} already exists; cut a new version instead of overwriting"
+            exit 1
+          fi
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          if [ "${{ steps.version.outputs.is_release }}" != "true" ]; then
+            echo "tags=${ACR_REGISTRY}/${IMAGE_NAME}:dev" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          TAGS="${ACR_REGISTRY}/${IMAGE_NAME}:v${{ steps.version.outputs.version }}"
+          if [ "${{ inputs.publish-to-ghcr }}" = "true" ]; then
+            TAGS="${TAGS},ghcr.io/${{ github.repository_owner }}/${IMAGE_NAME}:v${{ steps.version.outputs.version }}"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          platforms: ${{ inputs.platforms }}
+          push: ${{ steps.version.outputs.is_release == 'true' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "### ${IMAGE_NAME} image"
+            echo
+            if [ "${{ steps.version.outputs.is_release }}" = "true" ]; then
+              echo "Pushed \`${ACR_REGISTRY}/${IMAGE_NAME}:v${{ steps.version.outputs.version }}\` (immutable)."
+            else
+              echo "Build-only: images are published from \`${TAG_PREFIX}X.Y.Z\` tags."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
