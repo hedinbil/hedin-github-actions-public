@@ -188,8 +188,10 @@ jobs:
       - name: Package and push
         run: |
           helm package "${{ needs.validate.outputs.chart-dir }}" --destination /tmp
+          # Without pipefail the step takes tee's exit code, so a failed push would pass.
+          set -o pipefail
           helm push "/tmp/${CHART_NAME}-${VERSION}.tgz" "oci://${ACR_NAME}.azurecr.io/${CHARTS_PATH}" 2>&1 | tee /tmp/push.log
-          DIGEST=$(grep -o 'sha256:[0-9a-f]\{64\}' /tmp/push.log | head -1)
+          DIGEST=$(grep -o 'sha256:[0-9a-f]\{64\}' /tmp/push.log | head -1 || true)
           echo "DIGEST=${DIGEST}" >> "$GITHUB_ENV"
 
       - name: Push to GHCR (secondary)
